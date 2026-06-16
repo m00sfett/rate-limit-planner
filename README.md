@@ -4,14 +4,14 @@ A desktop GUI tool for tracking API quota consumption across 7-day billing cycle
 
 ## Features
 
-- Supports **Codex**, **Claude**, and **AGY** tools
+- Supports **Codex** and **Claude** tools
 - 12 built-in consumption plans (from WAGD to YOLO)
 - Live calculation of daily targets and progress
 - Plan preview bar chart showing 7-day distribution
 - Tooltips on plan buttons showing the full day-by-day breakdown
 - Per-tool persistent settings (restored on next launch)
 - Auto-refresh every 60 seconds
-- Export to text file — select which tools to include
+- Export to text file — select which tool snapshots to include
 
 ## Requirements
 
@@ -27,7 +27,7 @@ python planner_ui.py
 ## How it works
 
 Select your tool, consumption plan, and reset date/time. Move the slider to your
-current quota value (REST % for Codex/AGY, USED % for Claude). The tool calculates
+current quota value (REMAINING % for Codex, USED % for Claude). The tool calculates
 which day of the 7-day cycle you're in and shows how far you are from today's target.
 
 ### Plans

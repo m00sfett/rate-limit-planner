@@ -8,7 +8,7 @@ from pathlib import Path
 
 # ─── Data ────────────────────────────────────────────────────────────────────
 
-TOOLS = ['codex', 'claude', 'agy']
+TOOLS = ['codex', 'claude']
 
 PLANS = [
     ("WAGD",          {1:  0, 2:  0, 3:  0, 4:  0, 5:  0, 6:  0, 7:100}),
@@ -27,14 +27,14 @@ PLANS = [
 PLAN_NAMES   = [p[0] for p in PLANS]
 PLAN_TARGETS = {p[0]: p[1] for p in PLANS}
 PLAN_SHORT   = {
-    "WAGD": "WAGD",          "Conservative 3": "Kons-3",
-    "Conservative 2": "Kons-2", "Conservative 1": "Kons-1",
+    "WAGD": "WAGD",          "Conservative 3": "Cons-3",
+    "Conservative 2": "Cons-2", "Conservative 1": "Cons-1",
     "Linear": "Linear",      "Balanced": "Balanced",
     "Progressive 1": "Prog-1", "Progressive 2": "Prog-2",
     "Progressive 3": "Prog-3", "Aggressive 1": "Aggr-1",
     "Aggressive 2": "Aggr-2",  "YOLO": "YOLO",
 }
-WEEKDAYS_DE   = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So']
+WEEKDAYS_EN   = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 SETTINGS_FILE = Path(__file__).parent / '.settings.json'
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
@@ -125,7 +125,7 @@ class App:
         self.root = root
         self.root.title("Rate-Limit Planner")
         self.root.configure(bg=BG)
-        self.root.minsize(940, 640)
+        self.root.minsize(940, 680)
 
         self.settings = load_settings()
         self.tool = self.settings["last_tool"]
@@ -142,12 +142,10 @@ class App:
         self.hour_str   = tk.StringVar()
         self.min_str    = tk.StringVar()
         self.slider_var = tk.IntVar()
-        self.lbl_metric = tk.StringVar(value='REST')
+        self.lbl_metric = tk.StringVar(value='REMAINING')
 
         self.exp_codex  = tk.BooleanVar(value=True)
         self.exp_claude = tk.BooleanVar(value=True)
-        self.exp_agy    = tk.BooleanVar(value=True)
-
         self._build_ui()
         self._restore_tool(self.tool)
         self.calculate()
@@ -194,8 +192,9 @@ class App:
             b.pack(side='left', padx=2, pady=2)
             self.plan_btns[name] = b
             t = PLAN_TARGETS[name]
-            tip = (f"{name}\n  " +
-                   "  ".join(f"T{d}:{t[d]:>4}%" for d in range(1, 8)))
+            top_row = "  ".join(f"Day {d}: {t[d]:>4}%" for d in range(1, 5))
+            bottom_row = "  ".join(f"Day {d}: {t[d]:>4}%" for d in range(5, 8))
+            tip = f"{name}\n  {top_row}\n  {bottom_row}"
             Tooltip(b, tip, delay=600)
 
         # Plan preview canvas
@@ -213,7 +212,7 @@ class App:
                  font=('Sans', 9)).pack(side='left')
         self.date_btns = {}
         for i, d in enumerate(self.dates):
-            lbl = f"{WEEKDAYS_DE[d.weekday()]}\n{d.strftime('%d.%m')}"
+            lbl = f"{WEEKDAYS_EN[d.weekday()]}\n{d.strftime('%d.%m')}"
             b = tk.Button(df, text=lbl, width=7, relief='flat',
                           bg=BTN_BG, fg=FG, cursor='hand2', font=('Sans', 8),
                           justify='center',
@@ -227,7 +226,7 @@ class App:
         # Row 5 – Time ±
         tf = tk.Frame(self.root, bg=BG)
         tf.pack(fill='x', **PAD)
-        tk.Label(tf, text="Zeit:", bg=BG, fg=DIM, width=6, anchor='w',
+        tk.Label(tf, text="Time:", bg=BG, fg=DIM, width=6, anchor='w',
                  font=('Sans', 9)).pack(side='left')
 
         def spin(parent, txt, cmd):
@@ -272,7 +271,7 @@ class App:
         rf = tk.Frame(self.root, bg=BG)
         rf.pack(fill='both', expand=True, padx=8, pady=4)
         self.result = tk.Text(rf, bg=RES_BG, fg=FG, font=('Courier', 11),
-                              state='disabled', relief='flat', height=11,
+                              state='disabled', relief='flat', height=13,
                               selectbackground=SEL_BG, cursor='arrow')
         self.result.pack(fill='both', expand=True)
         self.result.tag_configure('dim',  foreground='#555')
@@ -288,18 +287,17 @@ class App:
         bf.pack(fill='x', padx=8, pady=6)
         left = tk.Frame(bf, bg=BG)
         left.pack(side='left')
-        tk.Button(left, text='Exportieren', command=self._export,
+        tk.Button(left, text='Export', command=self._export,
                   bg='#1a4020', fg='#90d490', relief='flat', cursor='hand2',
                   font=('Sans', 10), width=14, pady=5,
                   activebackground='#2a6030').pack(side='left', padx=(0, 8))
         for var, lbl in [(self.exp_codex, 'codex'),
-                         (self.exp_claude, 'claude'),
-                         (self.exp_agy, 'agy')]:
+                         (self.exp_claude, 'claude')]:
             tk.Checkbutton(left, text=lbl, variable=var, bg=BG, fg=FG,
                            selectcolor=BTN_BG, activebackground=BG,
                            activeforeground=FG, font=('Sans', 9),
                            cursor='hand2').pack(side='left', padx=4)
-        tk.Button(bf, text='Beenden', command=self.root.destroy,
+        tk.Button(bf, text='Quit', command=self.root.destroy,
                   bg='#401a1a', fg='#d49090', relief='flat', cursor='hand2',
                   font=('Sans', 10), width=14, pady=5,
                   activebackground='#602020').pack(side='right', padx=4)
@@ -413,12 +411,12 @@ class App:
         self.hour     = int(s.get("hour",   23))
         self.minute   = int(s.get("minute", 59))
         self.value    = int(s.get("value",  50))
-        self.slider.config(resolution=20 if t == 'agy' else 1)
+        self.slider.config(resolution=1)
         self.hour_str.set(f"{self.hour:02d}")
         self.min_str.set(f"{self.minute:02d}")
         self.slider_var.set(self.value)
         self.val_lbl.config(text=str(self.value))
-        self.lbl_metric.set('USED' if t == 'claude' else 'REST')
+        self.lbl_metric.set('USED' if t == 'claude' else 'REMAINING')
         self._hi(self.tool_btns, t)
         self._hi(self.plan_btns, plan)
         self._hi(self.date_btns, self.date_idx)
@@ -454,40 +452,46 @@ class App:
 
         if tool == 'claude':
             metric      = 'USED'
-            tagesbeginn = 100 - rest_start
+            day_start   = 100 - rest_start
             target_val  = 100 - target_rest
             is_over     = value > target_val
             to_goal     = target_val - value
         else:
-            metric      = 'REST'
-            tagesbeginn = rest_start
+            metric      = 'REMAINING'
+            day_start   = rest_start
             target_val  = target_rest
             is_over     = value < target_val
             to_goal     = value - target_val
 
-        S = '═' * 52
+        S = '═' * 54
         T = '─' * 52
+        label_w = 21
+        remaining = self._fmt(hours_left)
+        cycle_text = f'{day_num} / 7   ({remaining})' if hours_left <= 0 else f'{day_num} / 7   ({remaining} remaining)'
+
+        def line(label, value, tag=''):
+            return (tag, f'  {label:<{label_w}} {value}\n')
+
         tagged = [
             ('dim',  S + '\n'),
-            ('bold', f'  Tool:           {tool.upper()}\n'),
-            ('',     f'  Plan:           {plan_name}\n'),
-            ('',     f'  Reset:          {d.strftime("%d.%m.%Y")}  {hour:02d}:{minute:02d}'
-                     f'  ({WEEKDAYS_DE[d.weekday()]})\n'),
-            ('',     f'  Zyklustag:      {day_num} / 7   (noch {self._fmt(hours_left)})\n'),
+            line('Tool:', tool.upper(), 'bold'),
+            line('Plan:', plan_name),
+            line('Reset:', f'{d.strftime("%d.%m.%Y")}  {hour:02d}:{minute:02d}'
+                         f'  ({WEEKDAYS_EN[d.weekday()]})'),
+            line('Cycle day:', cycle_text),
             ('dim',  '  ' + T + '\n'),
-            ('',     f'  Tagesbeginn {metric}:   {tagesbeginn:>3} %\n'),
-            ('val',  f'  Aktuell {metric}:       {value:>3} %p\n'),
-            ('',     f'  Verbrauchsziel:    {target_use:>3} %p'
-                     f'   →   Ziel-{metric}: {target_val:>3} %\n'),
+            line(f'Start of day {metric}:', f'{day_start:>3} %'),
+            line(f'Current {metric}:', f'{value:>3} %', 'val'),
+            line('Daily target:', f'{target_use:>3} %   →   Goal {metric}: {target_val:>3} %'),
             ('dim',  '  ' + T + '\n'),
         ]
 
         if is_over:
-            tagged.append(('warn', f'  ⚠  Zu viel verbraucht!   (Δ {abs(to_goal)} %p)\n'))
+            tagged.append(('warn', f'  ⚠  Over budget!   ({abs(to_goal)} percentage points over)\n'))
         elif to_goal == 0:
-            tagged.append(('ok', '  ✓  Exakt auf Tagesziel!\n'))
+            tagged.append(('ok', '  ✓  Exactly on target!\n'))
         else:
-            tagged.append(('ok', f'  →  {abs(to_goal)} %p bis Tagesziel\n'))
+            tagged.append(('ok', f'  →  {abs(to_goal)} percentage points to target\n'))
 
         tagged.append(('dim', S + '\n'))
         return tagged, ''.join(t for _, t in tagged)
@@ -504,23 +508,28 @@ class App:
 
     def _fmt(self, hours):
         if hours <= 0:
-            return 'abgelaufen'
+            return 'expired'
+        def plural(value, singular, plural_form):
+            return singular if value == 1 else plural_form
         total_m = int(hours * 60)
         if total_m >= 24 * 60:
             days = total_m // (24 * 60)
-            h    = (total_m % (24 * 60)) // 60
-            s    = f"{days} {'Tag' if days == 1 else 'Tage'}"
-            return f"{s} {h} Stunden" if h else s
+            rem  = total_m % (24 * 60)
+            hours_left = rem // 60
+            s = f"{days} {plural(days, 'day', 'days')}"
+            return f"{s} {hours_left} {plural(hours_left, 'hour', 'hours')}" if hours_left else s
         if total_m >= 60:
             h, m = divmod(total_m, 60)
-            return f"{h} Stunden {m} Minuten" if m else f"{h} Stunden"
-        return f"{total_m} Minuten"
+            if m:
+                return f"{h} {plural(h, 'hour', 'hours')} {m} {plural(m, 'minute', 'minutes')}"
+            return f"{h} {plural(h, 'hour', 'hours')}"
+        return f"{total_m} {plural(total_m, 'minute', 'minutes')}"
 
     # ── Export ───────────────────────────────────────────────────────────────
 
     def _export(self):
         to_export = [t for t, v in zip(TOOLS,
-                     [self.exp_codex, self.exp_claude, self.exp_agy]) if v.get()]
+                     [self.exp_codex, self.exp_claude]) if v.get()]
         if not to_export:
             return
         now = datetime.now()
@@ -539,7 +548,7 @@ class App:
         path = filedialog.asksaveasfilename(
             defaultextension='.txt',
             initialfile=f"rate-limit-planner_{now:%Y%m%d_%H%M}.txt",
-            filetypes=[('Textdateien', '*.txt'), ('Alle Dateien', '*.*')])
+            filetypes=[('Text files', '*.txt'), ('All files', '*.*')])
         if path:
             Path(path).write_text('\n'.join(blocks))
 
