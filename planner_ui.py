@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Rate-Limit Planner — tracks API quota across 7-day billing cycles."""
 import tkinter as tk
-from tkinter import filedialog
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
@@ -26,14 +25,6 @@ PLANS = [
 ]
 PLAN_NAMES   = [p[0] for p in PLANS]
 PLAN_TARGETS = {p[0]: p[1] for p in PLANS}
-PLAN_SHORT   = {
-    "WAGD": "WAGD",          "Conservative 3": "Cons-3",
-    "Conservative 2": "Cons-2", "Conservative 1": "Cons-1",
-    "Linear": "Linear",      "Balanced": "Balanced",
-    "Progressive 1": "Prog-1", "Progressive 2": "Prog-2",
-    "Progressive 3": "Prog-3", "Aggressive 1": "Aggr-1",
-    "Aggressive 2": "Aggr-2",  "YOLO": "YOLO",
-}
 WEEKDAYS_EN   = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 SETTINGS_FILE = Path(__file__).parent / '.settings.json'
 
@@ -57,7 +48,7 @@ def _default_settings():
     now = datetime.now()
     return {
         "last_tool": "codex",
-        "tools": {t: {"plan": "Linear", "date_offset": 1,
+        "tools": {t: {"plan": "Linear", "reset_weekday": (now.weekday() + 1) % 7,
                        "hour": now.hour, "minute": now.minute, "value": 50}
                   for t in TOOLS}
     }
@@ -75,6 +66,12 @@ def load_settings():
                 for k in s["tools"][t]:
                     if k in saved["tools"][t]:
                         s["tools"][t][k] = saved["tools"][t][k]
+                if "reset_weekday" not in saved["tools"][t] and "date_offset" in saved["tools"][t]:
+                    try:
+                        offset = int(saved["tools"][t]["date_offset"])
+                    except Exception:
+                        offset = 1
+                    s["tools"][t]["reset_weekday"] = (datetime.now().weekday() + offset) % 7
     except Exception:
         pass
     return s
@@ -130,11 +127,8 @@ class App:
         self.settings = load_settings()
         self.tool = self.settings["last_tool"]
 
-        today = datetime.now().date()
-        self.dates = [today + timedelta(days=i) for i in range(8)]
-
         self.selected_plan = "Linear"
-        self.date_idx      = 1
+        self.reset_weekday = (datetime.now().weekday() + 1) % 7
         self.hour          = 23
         self.minute        = 59
         self.value         = 50
@@ -142,10 +136,7 @@ class App:
         self.hour_str   = tk.StringVar()
         self.min_str    = tk.StringVar()
         self.slider_var = tk.IntVar()
-        self.lbl_metric = tk.StringVar(value='REMAINING')
 
-        self.exp_codex  = tk.BooleanVar(value=True)
-        self.exp_claude = tk.BooleanVar(value=True)
         self._build_ui()
         self._restore_tool(self.tool)
         self.calculate()
@@ -183,25 +174,38 @@ class App:
         r1 = tk.Frame(pc, bg=BG); r1.pack(fill='x')
         r2 = tk.Frame(pc, bg=BG); r2.pack(fill='x')
         self.plan_btns = {}
+        self.plan_frames = {}
         for i, name in enumerate(PLAN_NAMES):
             row = r1 if i < 6 else r2
-            b = tk.Button(row, text=PLAN_SHORT[name], width=9, relief='flat',
-                          bg=BTN_BG, fg=FG, cursor='hand2', font=('Sans', 9),
+            wrap = tk.Frame(row, bg=SEP_CLR, padx=1, pady=1)
+            wrap.pack(side='left', padx=2, pady=2)
+            b = tk.Button(wrap, text=name, width=14, relief='flat',
+                          bg=BTN_BG, fg=FG, cursor='hand2', font=('Sans', 8),
                           activebackground=SEL_BG, activeforeground=SEL_FG,
                           command=lambda n=name: self._sel_plan(n))
-            b.pack(side='left', padx=2, pady=2)
+            b.pack(fill='both', expand=True)
             self.plan_btns[name] = b
+            self.plan_frames[name] = wrap
             t = PLAN_TARGETS[name]
-            top_row = "  ".join(f"Day {d}: {t[d]:>4}%" for d in range(1, 5))
-            bottom_row = "  ".join(f"Day {d}: {t[d]:>4}%" for d in range(5, 8))
-            tip = f"{name}\n  {top_row}\n  {bottom_row}"
+            tip = f"{name}\n" + "\n".join(f"Day {d}: {t[d]:>3}%" for d in range(1, 8))
             Tooltip(b, tip, delay=600)
 
-        # Plan preview canvas
-        self.plan_canvas = tk.Canvas(self.root, height=62, bg=BG,
+        # Plan preview
+        self.plan_preview = tk.Frame(self.root, bg=BG)
+        self.plan_preview.pack(fill='x', padx=20, pady=(0, 2))
+        self.plan_canvas = tk.Canvas(self.plan_preview, height=54, bg=BG,
                                      highlightthickness=0)
-        self.plan_canvas.pack(fill='x', padx=20, pady=(0, 2))
+        self.plan_canvas.pack(fill='x')
         self.plan_canvas.bind('<Configure>', lambda _: self._draw_preview())
+        self.plan_labels = tk.Frame(self.plan_preview, bg=BG)
+        self.plan_labels.pack(fill='x', pady=(1, 0))
+        self.plan_value_labels = []
+        for i in range(7):
+            lbl = tk.Label(self.plan_labels, text='0%', bg=BG, fg='#9a9a9a',
+                           font=('Sans', 8), anchor='center')
+            lbl.grid(row=0, column=i, sticky='ew')
+            self.plan_labels.grid_columnconfigure(i, weight=1)
+            self.plan_value_labels.append(lbl)
 
         tk.Frame(self.root, bg=SEP_CLR, height=1).pack(fill='x', padx=8)
 
@@ -211,7 +215,8 @@ class App:
         tk.Label(df, text="Reset:", bg=BG, fg=DIM, width=6, anchor='w',
                  font=('Sans', 9)).pack(side='left')
         self.date_btns = {}
-        for i, d in enumerate(self.dates):
+        visible_dates = self._visible_dates()
+        for i, d in enumerate(visible_dates):
             lbl = f"{WEEKDAYS_EN[d.weekday()]}\n{d.strftime('%d.%m')}"
             b = tk.Button(df, text=lbl, width=7, relief='flat',
                           bg=BTN_BG, fg=FG, cursor='hand2', font=('Sans', 8),
@@ -223,35 +228,58 @@ class App:
 
         tk.Frame(self.root, bg=SEP_CLR, height=1).pack(fill='x', padx=8)
 
-        # Row 5 – Time ±
+        # Row 5 – Time
         tf = tk.Frame(self.root, bg=BG)
         tf.pack(fill='x', **PAD)
         tk.Label(tf, text="Time:", bg=BG, fg=DIM, width=6, anchor='w',
                  font=('Sans', 9)).pack(side='left')
 
         def spin(parent, txt, cmd):
-            return tk.Button(parent, text=txt, width=2, relief='flat',
+            return tk.Button(parent, text=txt, width=1, relief='flat',
                              bg=BTN_BG, fg=FG, cursor='hand2',
-                             font=('Mono', 12, 'bold'),
+                             font=('Mono', 10, 'bold'),
                              activebackground=SEL_BG, command=cmd)
 
-        spin(tf, '−', self._dec_h).pack(side='left', padx=2)
-        tk.Label(tf, textvariable=self.hour_str, bg=BTN_BG, fg='white',
-                 width=3, font=('Mono', 15, 'bold'), anchor='center').pack(side='left')
-        spin(tf, '+', self._inc_h).pack(side='left', padx=2)
-        tk.Label(tf, text=' : ', bg=BG, fg=FG, font=('Mono', 15)).pack(side='left')
-        spin(tf, '−', self._dec_m).pack(side='left', padx=2)
-        tk.Label(tf, textvariable=self.min_str, bg=BTN_BG, fg='white',
-                 width=3, font=('Mono', 15, 'bold'), anchor='center').pack(side='left')
-        spin(tf, '+', self._inc_m).pack(side='left', padx=2)
+        spin(tf, '−', self._dec_h).pack(side='left', padx=(2, 1))
+        self.hour_entry = tk.Entry(
+            tf, textvariable=self.hour_str, width=4, justify='center',
+            bg=BTN_BG, fg='white', insertbackground='white', relief='flat',
+            font=('Mono', 15, 'bold')
+        )
+        self.hour_entry.config(validate='key',
+                               validatecommand=(self.root.register(self._validate_time_input), '%P'))
+        self.hour_entry.bind('<KeyRelease>', lambda _e: self._sync_time_from_entry('hour'))
+        self.hour_entry.bind('<FocusOut>', lambda _e: self._finalize_time_entry('hour'))
+        self.hour_entry.bind('<Return>', lambda _e: self._finalize_time_entry('hour'))
+        self.hour_entry.bind('<KP_Enter>', lambda _e: self._finalize_time_entry('hour'))
+        self.hour_entry.pack(side='left')
+        spin(tf, '+', self._inc_h).pack(side='left', padx=(1, 4))
+        tk.Label(tf, text=':', bg=BG, fg=FG, font=('Mono', 15)).pack(side='left', padx=(2, 4))
+        spin(tf, '−', self._dec_m).pack(side='left', padx=(1, 1))
+        self.min_entry = tk.Entry(
+            tf, textvariable=self.min_str, width=4, justify='center',
+            bg=BTN_BG, fg='white', insertbackground='white', relief='flat',
+            font=('Mono', 15, 'bold')
+        )
+        self.min_entry.config(validate='key',
+                              validatecommand=(self.root.register(self._validate_time_input), '%P'))
+        self.min_entry.bind('<KeyRelease>', lambda _e: self._sync_time_from_entry('minute'))
+        self.min_entry.bind('<FocusOut>', lambda _e: self._finalize_time_entry('minute'))
+        self.min_entry.bind('<Return>', lambda _e: self._finalize_time_entry('minute'))
+        self.min_entry.bind('<KP_Enter>', lambda _e: self._finalize_time_entry('minute'))
+        self.min_entry.pack(side='left')
+        spin(tf, '+', self._inc_m).pack(side='left', padx=(1, 4))
+        tk.Button(tf, text='[00]', width=4, relief='flat', bg=BTN_BG, fg=FG,
+                  cursor='hand2', font=('Sans', 9), activebackground=SEL_BG,
+                  command=self._reset_minutes).pack(side='left', padx=(6, 0))
 
         tk.Frame(self.root, bg=SEP_CLR, height=1).pack(fill='x', padx=8)
 
         # Row 6 – Slider
         sf = tk.Frame(self.root, bg=BG)
         sf.pack(fill='x', **PAD)
-        tk.Label(sf, textvariable=self.lbl_metric, bg=BG, fg='#aaa',
-                 width=6, anchor='w', font=('Sans', 10, 'bold')).pack(side='left')
+        tk.Label(sf, text='Current:', bg=BG, fg='#aaa',
+                 width=8, anchor='w', font=('Sans', 10, 'bold')).pack(side='left')
         spin(sf, '−', self._dec_val).pack(side='left', padx=2)
         spin(sf, '+', self._inc_val).pack(side='left', padx=2)
         self.slider = tk.Scale(sf, from_=0, to=100, resolution=1,
@@ -270,33 +298,50 @@ class App:
         # Result
         rf = tk.Frame(self.root, bg=BG)
         rf.pack(fill='both', expand=True, padx=8, pady=4)
-        self.result = tk.Text(rf, bg=RES_BG, fg=FG, font=('Courier', 11),
-                              state='disabled', relief='flat', height=13,
-                              selectbackground=SEL_BG, cursor='arrow')
-        self.result.pack(fill='both', expand=True)
-        self.result.tag_configure('dim',  foreground='#555')
-        self.result.tag_configure('bold', foreground='white', font=('Courier', 11, 'bold'))
-        self.result.tag_configure('val',  foreground=VAL_FG,  font=('Courier', 11, 'bold'))
-        self.result.tag_configure('warn', foreground=WARN)
-        self.result.tag_configure('ok',   foreground=OK_CLR)
+        self.result_panel = tk.Frame(rf, bg=RES_BG, highlightbackground=SEP_CLR,
+                                     highlightthickness=1)
+        self.result_panel.pack(fill='both', expand=True)
+        result_body = tk.Frame(self.result_panel, bg=RES_BG)
+        result_body.pack(fill='both', expand=True, padx=12, pady=10)
+        self.result_fields = {}
+        result_body.grid_columnconfigure(0, weight=1)
+        result_body.grid_columnconfigure(1, weight=1)
+
+        def add_field(row, col, key, title, value_fg=FG, value_font=('Courier', 11, 'bold')):
+            cell = tk.Frame(result_body, bg=RES_BG)
+            cell.grid(row=row, column=col, sticky='w', padx=(0, 20), pady=(0, 10))
+            tk.Label(cell, text=title, bg=RES_BG, fg='#8c8c8c',
+                     font=('Sans', 8), anchor='w').pack(anchor='w')
+            lbl = tk.Label(cell, text='', bg=RES_BG, fg=value_fg,
+                           font=value_font, anchor='w')
+            lbl.pack(anchor='w', pady=(1, 0))
+            self.result_fields[key] = lbl
+
+        add_field(0, 0, 'tool', 'Tool')
+        add_field(0, 1, 'plan', 'Plan')
+        add_field(1, 0, 'mode', 'Mode')
+        add_field(1, 1, 'reset', 'Reset')
+        add_field(2, 0, 'cycle_day', 'Cycle day')
+        add_field(2, 1, 'time_left', 'Time left')
+        add_field(3, 0, 'day_start', 'Start of day')
+        add_field(3, 1, 'current', 'Current', VAL_FG)
+        add_field(4, 0, 'daily_target', 'Daily target')
+        add_field(4, 1, 'goal', 'Goal')
+        status = tk.Frame(result_body, bg=RES_BG)
+        status.grid(row=5, column=0, columnspan=2, sticky='w', pady=(2, 0))
+        tk.Label(status, text='Status', bg=RES_BG, fg='#8c8c8c',
+                 font=('Sans', 8), anchor='w').pack(anchor='w')
+        self.result_fields['status'] = tk.Label(
+            status, text='', bg=RES_BG, fg=OK_CLR,
+            font=('Courier', 11, 'bold'), anchor='w'
+        )
+        self.result_fields['status'].pack(anchor='w', pady=(1, 0))
 
         tk.Frame(self.root, bg=SEP_CLR, height=1).pack(fill='x', padx=8)
 
         # Bottom row
         bf = tk.Frame(self.root, bg=BG)
         bf.pack(fill='x', padx=8, pady=6)
-        left = tk.Frame(bf, bg=BG)
-        left.pack(side='left')
-        tk.Button(left, text='Export', command=self._export,
-                  bg='#1a4020', fg='#90d490', relief='flat', cursor='hand2',
-                  font=('Sans', 10), width=14, pady=5,
-                  activebackground='#2a6030').pack(side='left', padx=(0, 8))
-        for var, lbl in [(self.exp_codex, 'codex'),
-                         (self.exp_claude, 'claude')]:
-            tk.Checkbutton(left, text=lbl, variable=var, bg=BG, fg=FG,
-                           selectcolor=BTN_BG, activebackground=BG,
-                           activeforeground=FG, font=('Sans', 9),
-                           cursor='hand2').pack(side='left', padx=4)
         tk.Button(bf, text='Quit', command=self.root.destroy,
                   bg='#401a1a', fg='#d49090', relief='flat', cursor='hand2',
                   font=('Sans', 10), width=14, pady=5,
@@ -305,12 +350,7 @@ class App:
     # ── Plan preview ─────────────────────────────────────────────────────────
 
     def _current_day_num(self):
-        d = self.dates[self.date_idx]
-        reset_dt = datetime(d.year, d.month, d.day, self.hour, self.minute)
-        delta = (datetime.now() - (reset_dt - timedelta(days=7))).total_seconds()
-        if delta < 0 or delta >= 7 * 86400:
-            return 1
-        return min(7, int(delta // 86400) + 1)
+        return self._cycle_context()[2]
 
     def _draw_preview(self):
         c = self.plan_canvas
@@ -321,22 +361,20 @@ class App:
         targets = PLAN_TARGETS.get(self.selected_plan, PLAN_TARGETS["Linear"])
         today   = self._current_day_num()
         max_val = max(targets[i] for i in range(1, 8)) or 1
-        LABEL_H = 14
-        bar_zone = h - LABEL_H
+        bar_zone = h - 6
         col_w    = w / 7
         for i in range(1, 8):
             x0, x1 = (i - 1) * col_w, i * col_w
-            cx  = (x0 + x1) / 2
             val = targets[i]
             bh  = (val / max_val) * bar_zone
             color = '#5ab0f0' if i == today else ('#1e3d54' if i < today else '#2a5580')
             if bh > 1:
-                c.create_rectangle(x0 + 3, bar_zone - bh, x1 - 3, bar_zone,
+                c.create_rectangle(x0 + 3, bar_zone - bh, x1 - 3, bar_zone - 2,
                                    fill=color, outline='')
-            c.create_text(cx, h - 3, text=f"{val}%" if val else "0",
-                          fill='#777', font=('Sans', 7), anchor='s')
-        c.create_text(w - 4, 4, text=self.selected_plan,
-                      fill='#555', font=('Sans', 8, 'italic'), anchor='ne')
+            if i - 1 < len(self.plan_value_labels):
+                lbl = self.plan_value_labels[i - 1]
+                lbl.config(text=f"{val}%", fg='#ffffff' if i == today else '#9a9a9a',
+                           font=('Sans', 8, 'bold' if i == today else 'normal'))
 
     # ── Actions ──────────────────────────────────────────────────────────────
 
@@ -354,8 +392,10 @@ class App:
         self._commit()
 
     def _sel_date(self, idx):
-        self.date_idx = idx
-        self._hi(self.date_btns, idx)
+        visible = self._visible_dates()
+        if idx < len(visible):
+            self.reset_weekday = visible[idx].weekday()
+        self._refresh_calendar()
         self._commit()
 
     def _inc_h(self):
@@ -374,6 +414,11 @@ class App:
         self.minute = (self.minute - 1) % 60
         self.min_str.set(f"{self.minute:02d}"); self._commit()
 
+    def _reset_minutes(self):
+        self.minute = 0
+        self.min_str.set('00')
+        self._commit()
+
     def _on_slide(self, val):
         self.value = int(float(val))
         self.val_lbl.config(text=str(self.value)); self._commit()
@@ -388,6 +433,45 @@ class App:
         self.slider_var.set(self.value)
         self.val_lbl.config(text=str(self.value)); self._commit()
 
+    def _validate_time_input(self, proposed):
+        return proposed == '' or (proposed.isdigit() and len(proposed) <= 2)
+
+    def _sync_time_from_entry(self, kind):
+        var = self.hour_str if kind == 'hour' else self.min_str
+        raw = var.get().strip()
+        limit = 23 if kind == 'hour' else 59
+        if not raw.isdigit():
+            return
+        value = int(raw)
+        if value > limit:
+            var.set('00')
+            if kind == 'hour':
+                self.hour = 0
+            else:
+                self.minute = 0
+            self._commit()
+            return
+        if kind == 'hour':
+            self.hour = value
+        else:
+            self.minute = value
+        self._commit()
+
+    def _finalize_time_entry(self, kind):
+        var = self.hour_str if kind == 'hour' else self.min_str
+        raw = var.get().strip()
+        limit = 23 if kind == 'hour' else 59
+        if not raw.isdigit() or int(raw) > limit:
+            value = 0
+        else:
+            value = int(raw)
+        var.set(f"{value:02d}")
+        if kind == 'hour':
+            self.hour = value
+        else:
+            self.minute = value
+        self._commit()
+
     # ── Helpers ──────────────────────────────────────────────────────────────
 
     def _hi(self, btn_dict, active):
@@ -395,9 +479,60 @@ class App:
             b.config(bg=SEL_BG if k == active else BTN_BG,
                      fg=SEL_FG if k == active else FG)
 
+    def _visible_dates(self):
+        today = datetime.now().date()
+        return [today + timedelta(days=i) for i in range(8)]
+
+    def _next_reset_datetime(self):
+        now = datetime.now()
+        candidate = datetime(now.year, now.month, now.day, self.hour, self.minute)
+        days_ahead = (self.reset_weekday - now.weekday()) % 7
+        candidate += timedelta(days=days_ahead)
+        if candidate < now:
+            candidate += timedelta(days=7)
+        return candidate
+
+    def _refresh_calendar(self):
+        visible = self._visible_dates()
+        active_reset = self._next_reset_datetime().date()
+        for idx, b in self.date_btns.items():
+            d = visible[idx]
+            b.config(text=f"{WEEKDAYS_EN[d.weekday()]}\n{d.strftime('%d.%m')}")
+            if d == active_reset:
+                b.config(bg=SEL_BG, fg=SEL_FG)
+            else:
+                b.config(bg=BTN_BG, fg=FG)
+        self._update_plan_borders()
+
+    def _cycle_context(self):
+        reset_dt = self._next_reset_datetime()
+        now = datetime.now()
+        delta = (now - (reset_dt - timedelta(days=7))).total_seconds()
+        day_num = (1 if (delta < 0 or delta >= 7 * 86400)
+                   else min(7, int(delta // 86400) + 1))
+        return reset_dt, now, day_num
+
+    def _plan_matches(self, tool, plan_name, day_num, value):
+        targets = PLAN_TARGETS.get(plan_name, PLAN_TARGETS["Linear"])
+        rest_start  = 100 - sum(targets[i] for i in range(1, day_num))
+        target_use  = targets[day_num]
+        target_rest = rest_start - target_use
+        if tool == 'claude':
+            day_start = 100 - rest_start
+            target_val = 100 - target_rest
+            return day_start <= value <= target_val
+        day_start = rest_start
+        target_val = target_rest
+        return day_start >= value >= target_val
+
+    def _update_plan_borders(self, valid_plan_names=None):
+        valid_plan_names = set(valid_plan_names or [])
+        for name, wrap in self.plan_frames.items():
+            wrap.config(bg='#2f7d45' if name in valid_plan_names else SEP_CLR)
+
     def _save_current(self):
         self.settings["tools"][self.tool] = {
-            "plan": self.selected_plan, "date_offset": self.date_idx,
+            "plan": self.selected_plan, "reset_weekday": self.reset_weekday,
             "hour": self.hour, "minute": self.minute, "value": self.value,
         }
 
@@ -407,7 +542,7 @@ class App:
         if plan not in PLAN_TARGETS:
             plan = "Linear"
         self.selected_plan = plan
-        self.date_idx = min(int(s.get("date_offset", 1)), 7)
+        self.reset_weekday = int(s.get("reset_weekday", (datetime.now().weekday() + 1) % 7)) % 7
         self.hour     = int(s.get("hour",   23))
         self.minute   = int(s.get("minute", 59))
         self.value    = int(s.get("value",  50))
@@ -416,10 +551,9 @@ class App:
         self.min_str.set(f"{self.minute:02d}")
         self.slider_var.set(self.value)
         self.val_lbl.config(text=str(self.value))
-        self.lbl_metric.set('USED' if t == 'claude' else 'REMAINING')
         self._hi(self.tool_btns, t)
         self._hi(self.plan_btns, plan)
-        self._hi(self.date_btns, self.date_idx)
+        self._refresh_calendar()
         self._draw_preview()
 
     def _commit(self):
@@ -436,14 +570,10 @@ class App:
 
     # ── Calculation ──────────────────────────────────────────────────────────
 
-    def _calc(self, tool, plan_name, date_idx, hour, minute, value):
+    def _calc(self, tool, plan_name, value):
         targets = PLAN_TARGETS.get(plan_name, PLAN_TARGETS["Linear"])
-        d = self.dates[date_idx]
-        reset_dt = datetime(d.year, d.month, d.day, hour, minute)
-        now = datetime.now()
-        delta = (now - (reset_dt - timedelta(days=7))).total_seconds()
-        day_num = (1 if (delta < 0 or delta >= 7 * 86400)
-                   else min(7, int(delta // 86400) + 1))
+        reset_dt, now, day_num = self._cycle_context()
+        d = reset_dt.date()
 
         rest_start  = 100 - sum(targets[i] for i in range(1, day_num))
         target_use  = targets[day_num]
@@ -451,59 +581,54 @@ class App:
         hours_left  = (reset_dt - now).total_seconds() / 3600
 
         if tool == 'claude':
-            metric      = 'USED'
+            mode        = 'Used'
             day_start   = 100 - rest_start
             target_val  = 100 - target_rest
             is_over     = value > target_val
             to_goal     = target_val - value
         else:
-            metric      = 'REMAINING'
+            mode        = 'Remaining'
             day_start   = rest_start
             target_val  = target_rest
             is_over     = value < target_val
             to_goal     = value - target_val
-
-        S = '═' * 54
-        T = '─' * 52
-        label_w = 21
-        remaining = self._fmt(hours_left)
-        cycle_text = f'{day_num} / 7   ({remaining})' if hours_left <= 0 else f'{day_num} / 7   ({remaining} remaining)'
-
-        def line(label, value, tag=''):
-            return (tag, f'  {label:<{label_w}} {value}\n')
-
-        tagged = [
-            ('dim',  S + '\n'),
-            line('Tool:', tool.upper(), 'bold'),
-            line('Plan:', plan_name),
-            line('Reset:', f'{d.strftime("%d.%m.%Y")}  {hour:02d}:{minute:02d}'
-                         f'  ({WEEKDAYS_EN[d.weekday()]})'),
-            line('Cycle day:', cycle_text),
-            ('dim',  '  ' + T + '\n'),
-            line(f'Start of day {metric}:', f'{day_start:>3} %'),
-            line(f'Current {metric}:', f'{value:>3} %', 'val'),
-            line('Daily target:', f'{target_use:>3} %   →   Goal {metric}: {target_val:>3} %'),
-            ('dim',  '  ' + T + '\n'),
-        ]
-
         if is_over:
-            tagged.append(('warn', f'  ⚠  Over budget!   ({abs(to_goal)} percentage points over)\n'))
+            status = f"Over budget by {abs(to_goal)} percentage points"
+            status_fg = WARN
         elif to_goal == 0:
-            tagged.append(('ok', '  ✓  Exactly on target!\n'))
+            status = "Exactly on target"
+            status_fg = OK_CLR
         else:
-            tagged.append(('ok', f'  →  {abs(to_goal)} percentage points to target\n'))
+            status = f"{abs(to_goal)} percentage points short of target"
+            status_fg = OK_CLR
 
-        tagged.append(('dim', S + '\n'))
-        return tagged, ''.join(t for _, t in tagged)
+        return {
+            "tool": tool.upper(),
+            "plan": plan_name,
+            "mode": mode,
+            "reset": f'{d.strftime("%d.%m.%Y")}  {self.hour:02d}:{self.minute:02d}  ({WEEKDAYS_EN[d.weekday()]})',
+            "cycle_day": f"{day_num} / 7",
+            "time_left": self._fmt(hours_left),
+            "day_start": f"{day_start:>3} %",
+            "current": f"{value:>3} %",
+            "daily_target": f"{target_use:>3} %",
+            "goal": f"{target_val:>3} %",
+            "status": status,
+            "status_fg": status_fg,
+            "day_num": day_num,
+        }
 
     def calculate(self):
-        tagged, _ = self._calc(self.tool, self.selected_plan, self.date_idx,
-                                self.hour, self.minute, self.value)
-        self.result.config(state='normal')
-        self.result.delete('1.0', 'end')
-        for tag, text in tagged:
-            self.result.insert('end', text, tag)
-        self.result.config(state='disabled')
+        self._refresh_calendar()
+        data = self._calc(self.tool, self.selected_plan, self.value)
+        valid = [name for name in PLAN_NAMES
+                 if self._plan_matches(self.tool, name, data["day_num"], self.value)]
+        self._update_plan_borders(valid)
+        for key in ("tool", "plan", "mode", "reset", "cycle_day",
+                    "time_left", "day_start", "current", "daily_target",
+                    "goal", "status"):
+            self.result_fields[key].config(text=data[key])
+        self.result_fields["status"].config(fg=data["status_fg"])
         self._draw_preview()
 
     def _fmt(self, hours):
@@ -524,33 +649,6 @@ class App:
                 return f"{h} {plural(h, 'hour', 'hours')} {m} {plural(m, 'minute', 'minutes')}"
             return f"{h} {plural(h, 'hour', 'hours')}"
         return f"{total_m} {plural(total_m, 'minute', 'minutes')}"
-
-    # ── Export ───────────────────────────────────────────────────────────────
-
-    def _export(self):
-        to_export = [t for t, v in zip(TOOLS,
-                     [self.exp_codex, self.exp_claude]) if v.get()]
-        if not to_export:
-            return
-        now = datetime.now()
-        blocks = [f"Rate-Limit Planner Export\nGenerated: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"]
-        for t in to_export:
-            s    = self.settings["tools"].get(t, {})
-            plan = s.get("plan", "Linear")
-            if plan not in PLAN_TARGETS:
-                plan = "Linear"
-            di   = min(int(s.get("date_offset", 1)), 7)
-            h    = int(s.get("hour",   23))
-            m    = int(s.get("minute", 59))
-            v    = int(s.get("value",  50))
-            _, plain = self._calc(t, plan, di, h, m, v)
-            blocks.append(plain)
-        path = filedialog.asksaveasfilename(
-            defaultextension='.txt',
-            initialfile=f"rate-limit-planner_{now:%Y%m%d_%H%M}.txt",
-            filetypes=[('Text files', '*.txt'), ('All files', '*.*')])
-        if path:
-            Path(path).write_text('\n'.join(blocks))
 
 
 def main():
