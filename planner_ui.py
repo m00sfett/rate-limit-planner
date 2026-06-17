@@ -181,6 +181,8 @@ class App:
             wrap.pack(side='left', padx=2, pady=2)
             b = tk.Button(wrap, text=name, width=14, relief='flat',
                           bg=BTN_BG, fg=FG, cursor='hand2', font=('Sans', 8),
+                          bd=0, highlightthickness=1,
+                          highlightbackground=SEP_CLR, highlightcolor=SEP_CLR,
                           activebackground=SEL_BG, activeforeground=SEL_FG,
                           command=lambda n=name: self._sel_plan(n))
             b.pack(fill='both', expand=True)
@@ -325,7 +327,7 @@ class App:
         add_field(2, 1, 'time_left', 'Time left')
         add_field(3, 0, 'day_start', 'Start of day')
         add_field(3, 1, 'current', 'Current', VAL_FG)
-        add_field(4, 0, 'daily_target', 'Daily target')
+        add_field(4, 0, 'daily_target', 'Daily consumption target')
         add_field(4, 1, 'goal', 'Goal')
         status = tk.Frame(result_body, bg=RES_BG)
         status.grid(row=5, column=0, columnspan=2, sticky='w', pady=(2, 0))
@@ -528,7 +530,13 @@ class App:
     def _update_plan_borders(self, valid_plan_names=None):
         valid_plan_names = set(valid_plan_names or [])
         for name, wrap in self.plan_frames.items():
-            wrap.config(bg='#2f7d45' if name in valid_plan_names else SEP_CLR)
+            active = name in valid_plan_names
+            color = '#2f7d45' if active else SEP_CLR
+            wrap.config(bg=color)
+            self.plan_btns[name].config(
+                highlightbackground=color,
+                highlightcolor=color,
+            )
 
     def _save_current(self):
         self.settings["tools"][self.tool] = {
@@ -611,7 +619,7 @@ class App:
             "time_left": self._fmt(hours_left),
             "day_start": f"{day_start:>3} %",
             "current": f"{value:>3} %",
-            "daily_target": f"{target_use:>3} %",
+            "daily_target": f"{target_use:>3} %p",
             "goal": f"{target_val:>3} %",
             "status": status,
             "status_fg": status_fg,
